@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { saveMessage, markEmailSent } from "../lib/db.js";
 
 const escape = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -24,6 +25,14 @@ export default async function handler(req, res) {
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
   });
 
+  // Save first so the message survives even if the email fails.
+  let savedId = null;
+  try {
+    savedId = await saveMessage({ name, email, subject, message });
+  } catch (err) {
+    console.error("Database error:", err.message);
+  }
+
   try {
     await transporter.sendMail({
       from: process.env.MAIL_FROM || process.env.SMTP_USER,
@@ -33,9 +42,12 @@ export default async function handler(req, res) {
       text: `Name: ${name}\nEmail: ${email}\n\n${message}`,
       html: `<p><b>Name:</b> ${escape(name)}<br><b>Email:</b> ${escape(email)}</p><p>${escape(message).replace(/\n/g, "<br>")}</p>`,
     });
+    await markEmailSent(savedId).catch((err) => console.error("Database error:", err.message));
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("SMTP error:", err.message);
+    // The message is safely stored, so the visitor doesn't need to resend it.
+    if (savedId != null) return res.status(200).json({ ok: true });
     res.status(500).json({ ok: false, error: "Could not send message. Please try again later." });
   }
 }
